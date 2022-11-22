@@ -64,7 +64,14 @@ typedef struct
   u8 next_ext_type;
 } gtpu_header_t;
 
-#define GTPU_V1_HDR_LEN   8
+typedef struct {
+    u8 type;
+    u8 len;
+    u16 pad;
+} gtpu_ext_header_t;
+
+#define GTPU_V1_HDR_LEN       8
+#define GTPU_V1_EXT_HDR_LEN   8
 
 #define GTPU_VER_MASK (7<<5)
 #define GTPU_PT_BIT   (1<<4)
@@ -77,6 +84,11 @@ typedef struct
 
 #define GTPU_PT_GTP    (1<<4)
 #define GTPU_TYPE_GTPU  255
+
+#define GTPU_EXT_HDR_PRESENT  52
+#define GTPU_EXT_HDR_PDU_SESSION_CONTAINER   133
+#define GTPU_NO_MORE_EXT_HDR   0
+#define GTPU_QFI   9
 
 /* *INDENT-OFF* */
 typedef CLIB_PACKED(struct
