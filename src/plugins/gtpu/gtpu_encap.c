@@ -73,6 +73,7 @@ gtpu_encap_inline (vlib_main_t * vm,
   u32 next0 = 0, next1 = 0, next2 = 0, next3 = 0;
   vnet_hw_interface_t * hi0, * hi1, * hi2, * hi3;
   gtpu_tunnel_t * t0 = NULL, * t1 = NULL, * t2 = NULL, * t3 = NULL;
+  u16 ext_hdr_len;
 
   from = vlib_frame_vector_args (from_frame);
   n_left_from = from_frame->n_vectors;
@@ -80,6 +81,8 @@ gtpu_encap_inline (vlib_main_t * vm,
   next_index = node->cached_next_index;
   stats_sw_if_index = node->runtime_data[0];
   stats_n_packets = stats_n_bytes = 0;
+
+  ext_hdr_len = 0x08;
 
   while (n_left_from > 0)
     {
@@ -98,6 +101,7 @@ gtpu_encap_inline (vlib_main_t * vm,
           ip6_header_t * ip6_0, * ip6_1, * ip6_2, * ip6_3;
           udp_header_t * udp0, * udp1, * udp2, * udp3;
           gtpu_header_t * gtpu0, * gtpu1, * gtpu2, * gtpu3;
+          gtpu_ext_header_t * gtpu0_ext, * gtpu1_ext, * gtpu2_ext, * gtpu3_ext;
           u64 * copy_src0, * copy_dst0;
           u64 * copy_src1, * copy_dst1;
           u64 * copy_src2, * copy_dst2;
@@ -175,6 +179,11 @@ gtpu_encap_inline (vlib_main_t * vm,
           vnet_buffer(b2)->ip.adj_index[VLIB_TX] = t2->next_dpo.dpoi_index;
 	  next3 = t3->next_dpo.dpoi_next_node;
           vnet_buffer(b3)->ip.adj_index[VLIB_TX] = t3->next_dpo.dpoi_index;
+
+          vlib_buffer_advance(b0, -ext_hdr_len);
+          vlib_buffer_advance(b1, -ext_hdr_len);
+          vlib_buffer_advance(b2, -ext_hdr_len);
+          vlib_buffer_advance(b3, -ext_hdr_len);
 
           /* Apply the rewrite string. $$$$ vnet_rewrite? */
           vlib_buffer_advance (b0, -(word)_vec_len(t0->rewrite));
@@ -282,22 +291,63 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
 					     - sizeof (*ip4_0) - sizeof(*udp0)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu0->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu0->pdu_number = 0x00;
+          gtpu0->sequence = 0x00;
+          gtpu0->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu0_ext = (gtpu_ext_header_t *) (gtpu0 + 1);
+          gtpu0_ext->type = 0x01;
+          gtpu0_ext->len = 0x00;
+          gtpu0_ext->pad = GTPU_QFI;
 	      gtpu0->length = new_l0;
+
 	      gtpu1 = (gtpu_header_t *)(udp1+1);
 	      new_l1 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b1)
 					     - sizeof (*ip4_1) - sizeof(*udp1)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu1->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu1->pdu_number = 0x00;
+          gtpu1->sequence = 0x00;
+          gtpu1->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu1_ext = (gtpu_ext_header_t *) (gtpu1 + 1);
+          gtpu1_ext->type = 0x01;
+          gtpu1_ext->len = 0x00;
+          gtpu1_ext->pad = GTPU_QFI;
+
 	      gtpu1->length = new_l1;
+
 	      gtpu2 = (gtpu_header_t *)(udp2+1);
 	      new_l2 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b2)
 					     - sizeof (*ip4_2) - sizeof(*udp2)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu2->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu2->pdu_number = 0x00;
+          gtpu2->sequence = 0x00;
+          gtpu2->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu2_ext = (gtpu_ext_header_t *) (gtpu2 + 1);
+          gtpu2_ext->type = 0x01;
+          gtpu2_ext->len = 0x00;
+          gtpu2_ext->pad = GTPU_QFI;
 	      gtpu2->length = new_l2;
+
 	      gtpu3 = (gtpu_header_t *)(udp3+1);
 	      new_l3 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b3)
 					     - sizeof (*ip4_3) - sizeof(*udp3)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu3->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu3->pdu_number = 0x00;
+          gtpu3->sequence = 0x00;
+          gtpu3->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu3_ext = (gtpu_ext_header_t *) (gtpu3 + 1);
+          gtpu3_ext->type = 0x01;
+          gtpu3_ext->len = 0x00;
+          gtpu3_ext->pad = GTPU_QFI;
+
 	      gtpu3->length = new_l3;
 	    }
 	  else /* ipv6 */
@@ -367,22 +417,63 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
 					     - sizeof (*ip6_0) - sizeof(*udp0)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu0->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu0->pdu_number = 0x00;
+          gtpu0->sequence = 0x00;
+          gtpu0->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu0_ext = (gtpu_ext_header_t *) (gtpu0 + 1);
+          gtpu0_ext->type = 0x01;
+          gtpu0_ext->len = 0x00;
+          gtpu0_ext->pad = GTPU_QFI;
+
 	      gtpu0->length = new_l0;
+
 	      gtpu1 = (gtpu_header_t *)(udp1+1);
 	      new_l1 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b1)
 					     - sizeof (*ip6_1) - sizeof(*udp1)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu1->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu1->pdu_number = 0x00;
+          gtpu1->sequence = 0x00;
+          gtpu1->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu1_ext = (gtpu_ext_header_t *) (gtpu1 + 1);
+          gtpu1_ext->type = 0x01;
+          gtpu1_ext->len = 0x00;
+          gtpu1_ext->pad = GTPU_QFI;
+
 	      gtpu1->length = new_l1;
+
 	      gtpu2 = (gtpu_header_t *)(udp2+1);
 	      new_l2 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b2)
 					     - sizeof (*ip6_2) - sizeof(*udp2)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu2->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu2->pdu_number = 0x00;
+          gtpu2->sequence = 0x00;
+          gtpu2->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu2_ext = (gtpu_ext_header_t *) (gtpu2 + 1);
+          gtpu2_ext->type = 0x01;
+          gtpu2_ext->len = 0x00;
+          gtpu2_ext->pad = GTPU_QFI;
 	      gtpu2->length = new_l2;
+
 	      gtpu3 = (gtpu_header_t *)(udp3+1);
 	      new_l3 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b3)
 					     - sizeof (*ip6_3) - sizeof(*udp3)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu3->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu3->pdu_number = 0x00;
+          gtpu3->sequence = 0x00;
+          gtpu3->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu3_ext = (gtpu_ext_header_t *) (gtpu3 + 1);
+          gtpu3_ext->type = 0x01;
+          gtpu3_ext->len = 0x00;
+          gtpu3_ext->pad = GTPU_QFI;
 	      gtpu3->length = new_l3;
 
 	      /* IPv6 UDP checksum is mandatory */
@@ -508,6 +599,7 @@ gtpu_encap_inline (vlib_main_t * vm,
           ip6_header_t * ip6_0;
           udp_header_t * udp0;
           gtpu_header_t * gtpu0;
+          gtpu_ext_header_t *gtpu0_ext;
           u64 * copy_src0, * copy_dst0;
           u32 * copy_src_last0, * copy_dst_last0;
           u16 new_l0;
@@ -532,7 +624,8 @@ gtpu_encap_inline (vlib_main_t * vm,
 	  next0 = t0->next_dpo.dpoi_next_node;
 	  vnet_buffer(b0)->ip.adj_index[VLIB_TX] = t0->next_dpo.dpoi_index;
 
-          /* Apply the rewrite string. $$$$ vnet_rewrite? */
+          vlib_buffer_advance(b0, -ext_hdr_len);
+          /* Apply the rewrite string. $$$$ vnet_rewrite? TODO do i need to advance the buffer by gtpu_ext_hdr len?!?*/
           vlib_buffer_advance (b0, -(word)_vec_len(t0->rewrite));
 
 	  if (is_ip4)
@@ -567,11 +660,21 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      udp0->length = new_l0;
 	      udp0->src_port = flow_hash0;
 
-	      /* Fix GTPU length */
+	      /* Fix GTPU length TODO HOIH for HDR patch*/
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
 					     - sizeof (*ip4_0) - sizeof(*udp0)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+          gtpu0->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu0->pdu_number = 0x00;
+          gtpu0->sequence = 0x00;
+          gtpu0->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu0_ext = (gtpu_ext_header_t *) (gtpu0 + 1);
+          gtpu0_ext->type = 0x01;
+          gtpu0_ext->len = 0x00;
+          gtpu0_ext->pad = GTPU_QFI;
+
 	      gtpu0->length = new_l0;
 	    }
 
@@ -602,7 +705,18 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
 					     - sizeof (*ip4_0) - sizeof(*udp0)
-					     - GTPU_V1_HDR_LEN);
+					     - GTPU_V1_HDR_LEN + GTPU_V1_EXT_HDR_LEN);
+
+          gtpu0->ver_flags = GTPU_EXT_HDR_PRESENT;
+          gtpu0->pdu_number = 0x00;
+          gtpu0->sequence = 0x00;
+          gtpu0->next_ext_type = GTPU_EXT_HDR_PDU_SESSION_CONTAINER;
+
+          gtpu0_ext = (gtpu_ext_header_t *) (gtpu0 + 1);
+          gtpu0_ext->type = 0x01;
+          gtpu0_ext->len = 0x00;
+          gtpu0_ext->pad = GTPU_QFI;
+
 	      gtpu0->length = new_l0;
 
 	      /* IPv6 UDP checksum is mandatory */

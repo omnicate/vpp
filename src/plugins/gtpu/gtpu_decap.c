@@ -53,6 +53,7 @@ validate_gtpu_fib (vlib_buffer_t *b, gtpu_tunnel_t *t, u32 is_ip4)
   return t->encap_fib_index == vlib_buffer_get_ip_fib_index (b, is_ip4);
 }
 
+// Gets run with every input
 always_inline uword
 gtpu_input (vlib_main_t * vm,
              vlib_node_runtime_t * node,
@@ -75,24 +76,36 @@ gtpu_input (vlib_main_t * vm,
   else
     clib_memset (&last_key6, 0xff, sizeof (last_key6));
 
+  // Where is the framevector coming from
   from = vlib_frame_vector_args (from_frame);
+  // number of packets left in frame
   n_left_from = from_frame->n_vectors;
 
+  // whats the next node it needs to go to
   next_index = node->cached_next_index;
+  // stats from the next interface
   stats_sw_if_index = node->runtime_data[0];
+  // number of packets processed
   stats_n_packets = stats_n_bytes = 0;
 
+  // run until no more packets left in vectorframe
   while (n_left_from > 0)
     {
       u32 n_left_to_next;
 
+      // get vectorframe to process
       vlib_get_next_frame (vm, node, next_index,
 			   to_next, n_left_to_next);
+      // while there are still more than 4 packets left in frame and more than two packets in current frame
       while (n_left_from >= 4 && n_left_to_next >= 2)
 	{
+          // buffer index for loading packet data
           u32 bi0, bi1;
+          // vlib packet buffer
 	  vlib_buffer_t * b0, * b1;
+      // next operation to do with the packet
 	  u32 next0, next1;
+          // IP4 header type
           ip4_header_t * ip4_0, * ip4_1;
           ip6_header_t * ip6_0, * ip6_1;
           gtpu_header_t * gtpu0, * gtpu1;
@@ -111,6 +124,7 @@ gtpu_input (vlib_main_t * vm,
 	  {
 	    vlib_buffer_t * p2, * p3;
 
+        // prefetch 3 and 4
 	    p2 = vlib_get_buffer (vm, from[2]);
 	    p3 = vlib_get_buffer (vm, from[3]);
 
@@ -121,19 +135,27 @@ gtpu_input (vlib_main_t * vm,
 	    CLIB_PREFETCH (p3->data, 2*CLIB_CACHE_LINE_BYTES, LOAD);
 	  }
 
+      // getting buffer index from vectorframe
 	  bi0 = from[0];
 	  bi1 = from[1];
+      // pre inserting the packets for the next node
 	  to_next[0] = bi0;
 	  to_next[1] = bi1;
+      // forward in vectorframe
 	  from += 2;
+      // forward next node
 	  to_next += 2;
+      // decimate message counter for next node
 	  n_left_to_next -= 2;
+      // decimate message counter for current progessing node
 	  n_left_from -= 2;
 
+      // load packets into buffer
 	  b0 = vlib_get_buffer (vm, bi0);
 	  b1 = vlib_get_buffer (vm, bi1);
 
           /* udp leaves current_data pointing at the gtpu header */
+          // get pointers to the beginnings of the gtpu frame
           gtpu0 = vlib_buffer_get_current (b0);
           gtpu1 = vlib_buffer_get_current (b1);
           if (is_ip4)
@@ -162,8 +184,51 @@ gtpu_input (vlib_main_t * vm,
            * TBD: Manipulate Sequence Number and N-PDU Number
            * TBD: Manipulate Next Extension Header
            */
-          gtpu_hdr_len0 = sizeof(gtpu_header_t) - (((ver0 & GTPU_E_S_PN_BIT) == 0) * 4);
-          gtpu_hdr_len1 = sizeof(gtpu_header_t) - (((ver1 & GTPU_E_S_PN_BIT) == 0) * 4);
+        if (PREDICT_FALSE ((gtpu0->ver_flags & GTPU_E_S_PN_BIT) != 0))
+        {
+            gtpu_hdr_len0 = sizeof (gtpu_header_t);
+
+            if (PREDICT_FALSE ((gtpu0->ver_flags & GTPU_E_BIT) != 0))
+            {
+                gtpu_ext_header_t *ext =
+                        (gtpu_ext_header_t *) & gtpu0->next_ext_type;
+                u8 *end = vlib_buffer_get_tail (b0);
+
+                while ((u8 *) ext < end && ext->type != 0)
+                {
+                    /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
+                    gtpu_hdr_len0 += ext->len * 4;
+                    ext += ext->len * 4 / sizeof (*ext);
+                }
+            }
+        }
+        else
+        {
+            gtpu_hdr_len0 = sizeof (gtpu_header_t) - 4;
+        }
+
+        if (PREDICT_FALSE ((gtpu1->ver_flags & GTPU_E_S_PN_BIT) != 0))
+        {
+            gtpu_hdr_len1 = sizeof (gtpu_header_t);
+
+            if (PREDICT_FALSE ((gtpu1->ver_flags & GTPU_E_BIT) != 0))
+            {
+                gtpu_ext_header_t *ext =
+                        (gtpu_ext_header_t *) & gtpu1->next_ext_type;
+                u8 *end = vlib_buffer_get_tail (b1);
+
+                while ((u8 *) ext < end && ext->type != 0)
+                {
+                    /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
+                    gtpu_hdr_len1 += ext->len * 4;
+                    ext += ext->len * 4 / sizeof (*ext);
+                }
+            }
+        }
+        else
+        {
+            gtpu_hdr_len1 = sizeof (gtpu_header_t) - 4;
+        }
 
           has_space0 = vlib_buffer_has_space (b0, gtpu_hdr_len0);
           has_space1 = vlib_buffer_has_space (b1, gtpu_hdr_len1);
@@ -180,8 +245,8 @@ gtpu_input (vlib_main_t * vm,
             key4_0.src = ip4_0->src_address.as_u32;
             key4_0.teid = gtpu0->teid;
 
- 	    /* Make sure GTPU tunnel exist according to packet SIP and teid
- 	     * SIP identify a GTPU path, and teid identify a tunnel in a given GTPU path */
+ 	    /* Make sure GTPU tunnel exist according to packet SourceIP and teid
+ 	     * SourceIP identify a GTPU path, and teid identify a tunnel in a given GTPU path */
            if (PREDICT_FALSE (key4_0.as_u64 != last_key4.as_u64))
               {
                 p0 = hash_get (gtm->gtpu4_tunnel_by_key, key4_0.as_u64);
@@ -194,8 +259,9 @@ gtpu_input (vlib_main_t * vm,
                 last_key4.as_u64 = key4_0.as_u64;
                 tunnel_index0 = last_tunnel_index = p0[0];
               }
-            else
+            else // when the address of the packet is the same as the packet before ... saving lookup in table
               tunnel_index0 = last_tunnel_index;
+        // tunnel index in vpp
 	    t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
 
 	    /* Validate GTPU tunnel encap-fib index against packet */
@@ -206,7 +272,7 @@ gtpu_input (vlib_main_t * vm,
 		goto trace0;
 	      }
 
-	    /* Validate GTPU tunnel SIP against packet DIP */
+	    /* Validate GTPU tunnel SourceIP against packet DestinationIP */
 	    if (PREDICT_TRUE (ip4_0->dst_address.as_u32 == t0->src.ip4.as_u32))
 	      goto next0; /* valid packet */
 	    if (PREDICT_FALSE (ip4_address_is_multicast (&ip4_0->dst_address)))
@@ -278,21 +344,26 @@ gtpu_input (vlib_main_t * vm,
           }
 
 	next0:
-	  /* Pop gtpu header */
+	  /* Pop/Remove gtpu header from buffered package */
 	  vlib_buffer_advance (b0, gtpu_hdr_len0);
 
+          // where does it need to go in the graph next
           next0 = t0->decap_next_index;
+          // interface index the package is on
           sw_if_index0 = t0->sw_if_index;
           len0 = vlib_buffer_length_in_chain (vm, b0);
 
+          // Next three lines are for forwarding the payload to L2 subinterfaces
           /* Required to make the l2 tag push / pop code work on l2 subifs */
           if (PREDICT_TRUE(next0 == GTPU_INPUT_NEXT_L2_INPUT))
             vnet_update_l2_len (b0);
 
           /* Set packet input sw_if_index to unicast GTPU tunnel for learning */
           vnet_buffer(b0)->sw_if_index[VLIB_RX] = sw_if_index0;
+          // in case its a multicast packet set different interface index
 	  sw_if_index0 = (mt0) ? mt0->sw_if_index : sw_if_index0;
 
+          // Update stats
           pkts_decapsulated ++;
           stats_n_packets += 1;
           stats_n_bytes += len0;
@@ -325,6 +396,8 @@ gtpu_input (vlib_main_t * vm,
               tr->tunnel_index = tunnel_index0;
               tr->teid = has_space0 ? clib_net_to_host_u32(gtpu0->teid) : ~0;
             }
+
+          // End of processing for packet 0
 
 	  if (PREDICT_FALSE (((ver1 & GTPU_VER_MASK) != GTPU_V1_VER) | (!has_space1)))
 	    {
@@ -491,6 +564,7 @@ gtpu_input (vlib_main_t * vm,
 					   bi0, bi1, next0, next1);
 	}
 
+      // In case there are less than 4 packets left in frame and packets in current frame aka single processing
       while (n_left_from > 0 && n_left_to_next > 0)
 	{
 	  u32 bi0;
@@ -538,7 +612,28 @@ gtpu_input (vlib_main_t * vm,
            * TBD: Manipulate Sequence Number and N-PDU Number
            * TBD: Manipulate Next Extension Header
            */
-          gtpu_hdr_len0 = sizeof(gtpu_header_t) - (((ver0 & GTPU_E_S_PN_BIT) == 0) * 4);
+        if (PREDICT_FALSE ((gtpu0->ver_flags & GTPU_E_S_PN_BIT) != 0))
+        {
+            gtpu_hdr_len0 = sizeof (gtpu_header_t);
+
+            if (PREDICT_FALSE ((gtpu0->ver_flags & GTPU_E_BIT) != 0))
+            {
+                gtpu_ext_header_t *ext =
+                        (gtpu_ext_header_t *) & gtpu0->next_ext_type;
+                u8 *end = vlib_buffer_get_tail (b0);
+
+                while ((u8 *) ext < end && ext->type != 0)
+                {
+                    /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
+                    gtpu_hdr_len0 += ext->len * 4;
+                    ext += ext->len * 4 / sizeof (*ext);
+                }
+            }
+        }
+        else
+        {
+            gtpu_hdr_len0 = sizeof (gtpu_header_t) - 4;
+        }
 
           has_space0 = vlib_buffer_has_space (b0, gtpu_hdr_len0);
 
@@ -790,6 +885,7 @@ typedef enum {
   IP_GTPU_BYPASS_N_NEXT,
 } ip_vxan_bypass_next_t;
 
+// this function determines if a udp packet is actually gtpu and needs forwarding to gtpu_input
 always_inline uword
 ip_gtpu_bypass_inline (vlib_main_t * vm,
 			vlib_node_runtime_t * node,
@@ -1425,7 +1521,28 @@ gtpu_flow_input (vlib_main_t * vm,
            * TBD: Manipulate Sequence Number and N-PDU Number
            * TBD: Manipulate Next Extension Header
            */
-          gtpu_hdr_len0 = sizeof(gtpu_header_t) - (((ver0 & GTPU_E_S_PN_BIT) == 0) * 4);
+            if (PREDICT_FALSE ((gtpu0->ver_flags & GTPU_E_S_PN_BIT) != 0))
+            {
+                gtpu_hdr_len0 = sizeof (gtpu_header_t);
+
+                if (PREDICT_FALSE ((gtpu0->ver_flags & GTPU_E_BIT) != 0))
+                {
+                    gtpu_ext_header_t *ext =
+                            (gtpu_ext_header_t *) & gtpu0->next_ext_type;
+                    u8 *end = vlib_buffer_get_tail (b0);
+
+                    while ((u8 *) ext < end && ext->type != 0)
+                    {
+                        /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
+                        gtpu_hdr_len0 += ext->len * 4;
+                        ext += ext->len * 4 / sizeof (*ext);
+                    }
+                }
+            }
+            else
+            {
+                gtpu_hdr_len0 = sizeof (gtpu_header_t) - 4;
+            }
 
           has_space0 = vlib_buffer_has_space (b0, gtpu_hdr_len0);
       	  if (PREDICT_FALSE (((ver0 & GTPU_VER_MASK) != GTPU_V1_VER) | (!has_space0)))
@@ -1507,7 +1624,30 @@ trace0:
            * TBD: Manipulate Sequence Number and N-PDU Number
            * TBD: Manipulate Next Extension Header
            */
-          gtpu_hdr_len1 = sizeof(gtpu_header_t) - (((ver1 & GTPU_E_S_PN_BIT) == 0) * 4);
+            if (PREDICT_FALSE ((gtpu1->ver_flags & GTPU_E_S_PN_BIT) != 0))
+            {
+                gtpu_hdr_len1 = sizeof (gtpu_header_t);
+
+                if (PREDICT_FALSE ((gtpu1->ver_flags & GTPU_E_BIT) != 0))
+                {
+                    gtpu_ext_header_t *ext =
+                            (gtpu_ext_header_t *) & gtpu1->next_ext_type;
+                    u8 *end = vlib_buffer_get_tail (b1);
+
+                    while ((u8 *) ext < end && ext->type != 0)
+                    {
+                        /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
+                        gtpu_hdr_len1 += ext->len * 4;
+                        ext += ext->len * 4 / sizeof (*ext);
+                    }
+                }
+            }
+            else
+            {
+                gtpu_hdr_len1 = sizeof (gtpu_header_t) - 4;
+            }
+
+
           has_space1 = vlib_buffer_has_space (b1, gtpu_hdr_len1);
 	        if (PREDICT_FALSE (((ver1 & GTPU_VER_MASK) != GTPU_V1_VER) | (!has_space1)))
 	          {
@@ -1636,7 +1776,28 @@ trace1:
            * TBD: Manipulate Sequence Number and N-PDU Number
            * TBD: Manipulate Next Extension Header
            */
-          gtpu_hdr_len0 = sizeof(gtpu_header_t) - (((ver0 & GTPU_E_S_PN_BIT) == 0) * 4);
+            if (PREDICT_FALSE ((gtpu0->ver_flags & GTPU_E_S_PN_BIT) != 0))
+            {
+                gtpu_hdr_len0 = sizeof (gtpu_header_t);
+
+                if (PREDICT_FALSE ((gtpu0->ver_flags & GTPU_E_BIT) != 0))
+                {
+                    gtpu_ext_header_t *ext =
+                            (gtpu_ext_header_t *) & gtpu0->next_ext_type;
+                    u8 *end = vlib_buffer_get_tail (b0);
+
+                    while ((u8 *) ext < end && ext->type != 0)
+                    {
+                        /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
+                        gtpu_hdr_len0 += ext->len * 4;
+                        ext += ext->len * 4 / sizeof (*ext);
+                    }
+                }
+            }
+            else
+            {
+                gtpu_hdr_len0 = sizeof (gtpu_header_t) - 4;
+            }
 
           has_space0 = vlib_buffer_has_space (b0, gtpu_hdr_len0);
           if (PREDICT_FALSE (((ver0 & GTPU_VER_MASK) != GTPU_V1_VER) | (!has_space0)))
