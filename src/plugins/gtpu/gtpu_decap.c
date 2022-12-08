@@ -26,6 +26,8 @@ typedef struct {
   u32 tunnel_index;
   u32 error;
   u32 teid;
+  gtpu_header_t header;
+  u8 forwarding_type;
 } gtpu_rx_trace_t;
 
 static u8 * format_gtpu_rx_trace (u8 * s, va_list * args)
@@ -36,14 +38,30 @@ static u8 * format_gtpu_rx_trace (u8 * s, va_list * args)
 
   if (t->tunnel_index != ~0)
     {
-      s = format (s, "GTPU decap from gtpu_tunnel%d teid %d next %d error %d",
-                  t->tunnel_index, t->teid, t->next_index, t->error);
+      s = format (s, "GTPU decap from gtpu_tunnel%d ", t->tunnel_index);
+      switch (t->forwarding_type)
+	{
+	case GTPU_FORWARD_BAD_HEADER:
+	  s = format (s, "forwarding bad-header ");
+	  break;
+	case GTPU_FORWARD_UNKNOWN_TEID:
+	  s = format (s, "forwarding unknown-teid ");
+	  break;
+	case GTPU_FORWARD_UNKNOWN_TYPE:
+	  s = format (s, "forwarding unknown-type ");
+	  break;
+	}
+      s = format (s, "teid %u, ", t->teid);
     }
   else
     {
-      s = format (s, "GTPU decap error - tunnel for teid %d does not exist",
+      s = format (s, "GTPU decap error - tunnel for teid %u does not exist, ",
 		  t->teid);
     }
+  s = format (s, "next %d error %d, ",
+	      t->next_index, t->error);
+  s = format (s, "flags: 0x%x, type: %d, length: %d",
+	      t->header.ver_flags, t->header.type, t->header.length);
   return s;
 }
 
@@ -191,11 +209,25 @@ gtpu_input (vlib_main_t * vm,
            */
         if (PREDICT_TRUE ((gtpu0->ver_flags & GTPU_E_S_PN_BIT) != 0))
         {
-            gtpu_hdr_len0 = sizeof (gtpu_header_t);
+	  /* One or more of the E, S and PN flags are set, so all 3 fields
+	   * must be present:
+	   * The gtpu_header_t contains the Sequence number, N-PDU number and
+	   * Next extension header type.
+	   * Unused fields are zero.
+	   */
+	  gtpu_hdr_len0 = sizeof (gtpu_header_t);
 
             if (PREDICT_TRUE ((gtpu0->ver_flags & GTPU_E_BIT) != 0))
             {
-                gtpu_ext_header_t *ext =
+	      /* Make the header overlap the end of the gtpu_header_t, so
+	       * that it starts with the same Next extension header as the
+	       * gtpu_header_t.
+	       * This means that the gtpu_ext_header_t (ext) has the type
+	       * from the previous header and the length from the current one.
+	       * Works both for the first gtpu_header_t and all following
+	       * gtpu_ext_header_t extensions.
+	       */
+	      gtpu_ext_header_t *ext =
                         (gtpu_ext_header_t *) & gtpu0->next_ext_type;
                 u8 *end = vlib_buffer_get_tail (b0);
 
@@ -209,7 +241,11 @@ gtpu_input (vlib_main_t * vm,
         }
         else
         {
-            gtpu_hdr_len0 = sizeof (gtpu_header_t) - 4;
+	  /* The gtpu_header_t is missing the Sequence number, N-PDU number
+	   * and Next extension header type.
+	   * This makes it 4 bytes shorter
+	   */
+	  gtpu_hdr_len0 = sizeof (gtpu_header_t) - 4;
         }
 
         if (PREDICT_TRUE ((gtpu1->ver_flags & GTPU_E_S_PN_BIT) != 0))
@@ -241,55 +277,18 @@ gtpu_input (vlib_main_t * vm,
 	  // This is where the packet paths diverge
 	  if (PREDICT_FALSE (gtpu0->type != 255))
 	    {
-	      /* This is an error/nonstandard packet
-               * Skip decap and update destination IP
-	       */
-
-	      if (is_ip4) {
-		  /* Push the IP+UDP header instead */
-		  gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
-
-		  /* Search for a tunnel with teid 0 and destination IP 127.0.0.127 */
-		  key4_0.src = 0x7f00007fu;
-		  key4_0.teid = 0;
-
-		  p0 = hash_get (gtm->gtpu4_tunnel_by_key, key4_0.as_u64);
-		  if (PREDICT_FALSE (p0 == NULL))
-		    {
-		      error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
-		      next0 = GTPU_INPUT_NEXT_DROP;
-		      goto trace0;
-		    }
-		  // Get the tunnel index
-		  tunnel_index0 = p0[0];
-		  // Get the tunnel
-		  t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
-		  /* Validate GTPU tunnel encap-fib index against packet */
-		  // Not sure why/if this is needed
-		  if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
-		    {
-		      error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
-		      next0 = GTPU_INPUT_NEXT_DROP;
-		      goto trace0;
-		    }
-
-		  // Backup the IP4 checksum and address
-		  sum0 = ip4_0->checksum;
-		  old0 = ip4_0->dst_address.as_u32;
-
-		  // Update IP address of the packet using the src from the tunnel
-		  ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
-
-		  // Fix the IP4 checksum
-		  sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32, ip4_header_t, dst_address /* changed member */);
-		  ip4_0->checksum = ip_csum_fold (sum0);
-
-		  goto next0; /* valid forward tunnel */
-	      }
-
-	      // The packet is ipv6
-	      error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
+	      error0 = GTPU_ERROR_UNSUPPORTED_TYPE;
 	      next0 = GTPU_INPUT_NEXT_DROP;
+
+	      /* This is an error/nonstandard packet
+               * Check if it is to be forwarded. */
+	      if (is_ip4)
+		tunnel_index0 = gtm->unknown_type_forward_tunnel_index_ipv4;
+
+	      if (PREDICT_FALSE (tunnel_index0 != ~0))
+		goto forward0;
+
+	      // The packet is ipv6/not forwarded
 	      goto trace0;
 	    }
 
@@ -297,6 +296,16 @@ gtpu_input (vlib_main_t * vm,
 	    {
 	      error0 = has_space0 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
 	      next0 = GTPU_INPUT_NEXT_DROP;
+
+	      /* This is an unsupported/bad packet.
+               * Check if it is to be forwarded.
+	       */
+	      if (is_ip4)
+		tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv4;
+
+	      if (PREDICT_FALSE (tunnel_index0 != ~0))
+		goto forward0;
+
 	      goto trace0;
 	    }
 
@@ -314,6 +323,11 @@ gtpu_input (vlib_main_t * vm,
                   {
                     error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
                     next0 = GTPU_INPUT_NEXT_DROP;
+		    /* This is a standard packet, but no tunnel was found.
+		     * Check if it is to be forwarded. */
+		    tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+		    if (PREDICT_FALSE (tunnel_index0 != ~0))
+		      goto forward0;
                     goto trace0;
                   }
                 last_key4.as_u64 = key4_0.as_u64;
@@ -329,6 +343,9 @@ gtpu_input (vlib_main_t * vm,
 	      {
 		error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
 		next0 = GTPU_INPUT_NEXT_DROP;
+		tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+		if (PREDICT_FALSE (tunnel_index0 != ~0))
+		  goto forward0;
 		goto trace0;
 	      }
 
@@ -349,6 +366,9 @@ gtpu_input (vlib_main_t * vm,
 	      }
 	    error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
 	    next0 = GTPU_INPUT_NEXT_DROP;
+	    tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+	    if (PREDICT_FALSE (tunnel_index0 != ~0))
+	      goto forward0;
 	    goto trace0;
 
          } else /* !is_ip4 */ {
@@ -402,6 +422,35 @@ gtpu_input (vlib_main_t * vm,
 	    next0 = GTPU_INPUT_NEXT_DROP;
 	    goto trace0;
           }
+	forward0:
+	  /* Forward packet instead. Push the IP+UDP header */
+	  gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
+
+	  // Get the tunnel
+	  t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
+
+	  /* Validate GTPU tunnel encap-fib index against packet */
+	  if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
+	    {
+	      error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
+	      next0 = GTPU_INPUT_NEXT_DROP;
+	      goto trace0;
+	    }
+
+	  /* Clear the error, next0 will be overwritten by the tunnel */
+	  error0 = 0;
+
+	  // Backup the IP4 checksum and address
+	  sum0 = ip4_0->checksum;
+	  old0 = ip4_0->dst_address.as_u32;
+
+	  // Update IP address of the packet using the src from the tunnel
+	  ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
+
+	  // Fix the IP4 checksum
+	  sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32,
+				 ip4_header_t, dst_address /* changed member */);
+	  ip4_0->checksum = ip_csum_fold (sum0);
 
 	next0:
 	  /* Pop/Remove gtpu header from buffered package or push existing IP+UDP header back to the buffer*/
@@ -455,68 +504,48 @@ gtpu_input (vlib_main_t * vm,
               tr->error = error0;
               tr->tunnel_index = tunnel_index0;
               tr->teid = has_space0 ? clib_net_to_host_u32(gtpu0->teid) : ~0;
+
+	      if (vlib_buffer_has_space (b0, 4))
+		{
+		  tr->header.ver_flags = gtpu0->ver_flags;
+		  tr->header.type = gtpu0->type;
+		  tr->header.length = clib_net_to_host_u16 (gtpu0->length);
+		}
             }
 
           // End of processing for packet 0
 
 	  if (PREDICT_FALSE (gtpu1->type != 255))
 	    {
-	      /* This is an error/nonstandard packet
-	       * Skip decap and update destination IP
+	      /* This is an error/nonstandard packet.
+	       * Check if it is to be forwarded.
 	       */
+	      error1 = GTPU_ERROR_UNSUPPORTED_TYPE;
+	      next1 = GTPU_INPUT_NEXT_DROP;
 
-	      if (is_ip4) {
-		  /* Push the IP+UDP header instead */
-		  gtpu_hdr_len1 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t)); // Do not remove any bytes
+	      if (is_ip4)
+		tunnel_index1 = gtm->unknown_type_forward_tunnel_index_ipv4;
 
-		  /* Search for a tunnel with teid 0 and destination IP 127.0.0.127 */
-		  key4_1.src = 0x7f00007fu;
-		  key4_1.teid = 0;
-
-		  p1 = hash_get (gtm->gtpu4_tunnel_by_key, key4_1.as_u64);
-		  if (PREDICT_FALSE (p1 == NULL))
-		    {
-		      error1 = GTPU_ERROR_NO_ERROR_TUNNEL;
-		      next1 = GTPU_INPUT_NEXT_DROP;
-		      goto trace1;
-		    }
-		  // Get the tunnel index
-		  tunnel_index1 = p1[0];
-		  // Get the tunnel
-		  t1 = pool_elt_at_index (gtm->tunnels, tunnel_index1);
-		  /* Validate GTPU tunnel encap-fib index against packet */
-
-		  if (PREDICT_FALSE (validate_gtpu_fib (b1, t1, is_ip4) == 0))
-		    {
-		      error1 = GTPU_ERROR_NO_ERROR_TUNNEL;
-		      next1 = GTPU_INPUT_NEXT_DROP;
-		      goto trace1;
-		    }
-
-		  // Backup the IP4 checksum and address
-		  sum1 = ip4_1->checksum;
-		  old1 = ip4_1->dst_address.as_u32;
-
-		  // Update IP address of the packet using the src from the tunnel
-		  ip4_1->dst_address.as_u32 = t1->src.ip4.as_u32;
-
-		  // Fix the IP4 checksum
-		  sum1 = ip_csum_update (sum1, old1, ip4_1->dst_address.as_u32, ip4_header_t, dst_address /* changed member */);
-		  ip4_1->checksum = ip_csum_fold (sum1);
-
-		  goto next1; /* valid forward tunnel */
-		}
+	      if (PREDICT_FALSE (tunnel_index1 != ~0))
+		goto forward1;
 
 	      // The packet is ipv6
-	      error1 = GTPU_ERROR_NO_ERROR_TUNNEL;
-	      next1 = GTPU_INPUT_NEXT_DROP;
 	      goto trace1;
-	      //goto next1; /* valid packet */
 	    }
 	  if (PREDICT_FALSE (((ver1 & GTPU_VER_MASK) != GTPU_V1_VER) | (!has_space1)))
 	    {
 	      error1 = has_space1 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
 	      next1 = GTPU_INPUT_NEXT_DROP;
+
+	      /* This is an unsupported/bad packet.
+               * Check if it is to be forwarded.
+	       */
+	      if (is_ip4)
+		tunnel_index1 = gtm->bad_header_forward_tunnel_index_ipv4;
+
+	      if (PREDICT_FALSE (tunnel_index1 != ~0))
+		goto forward1;
+
 	      goto trace1;
 	    }
 
@@ -534,6 +563,9 @@ gtpu_input (vlib_main_t * vm,
                   {
                     error1 = GTPU_ERROR_NO_SUCH_TUNNEL;
                     next1 = GTPU_INPUT_NEXT_DROP;
+		    tunnel_index1 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+		    if (PREDICT_FALSE (tunnel_index1 != ~0))
+		      goto forward1;
                     goto trace1;
                   }
                 last_key4.as_u64 = key4_1.as_u64;
@@ -548,6 +580,9 @@ gtpu_input (vlib_main_t * vm,
 	      {
 		error1 = GTPU_ERROR_NO_SUCH_TUNNEL;
 		next1 = GTPU_INPUT_NEXT_DROP;
+		tunnel_index1 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+		if (PREDICT_FALSE (tunnel_index1 != ~0))
+		  goto forward1;
 		goto trace1;
 	      }
 
@@ -568,6 +603,9 @@ gtpu_input (vlib_main_t * vm,
 	      }
 	    error1 = GTPU_ERROR_NO_SUCH_TUNNEL;
 	    next1 = GTPU_INPUT_NEXT_DROP;
+	    tunnel_index1 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+	    if (PREDICT_FALSE (tunnel_index1 != ~0))
+	      goto forward1;
 	    goto trace1;
 
          } else /* !is_ip4 */ {
@@ -623,6 +661,35 @@ gtpu_input (vlib_main_t * vm,
 	    next1 = GTPU_INPUT_NEXT_DROP;
 	    goto trace1;
 	  }
+	forward1:
+	  /* Forward packet instead. Push the IP+UDP header */
+	  gtpu_hdr_len1 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
+
+	  // Get the tunnel
+	  t1 = pool_elt_at_index (gtm->tunnels, tunnel_index1);
+
+	  /* Validate GTPU tunnel encap-fib index against packet */
+	  if (PREDICT_FALSE (validate_gtpu_fib (b1, t1, is_ip4) == 0))
+	    {
+	      error1 = GTPU_ERROR_NO_ERROR_TUNNEL;
+	      next1 = GTPU_INPUT_NEXT_DROP;
+	      goto trace1;
+	    }
+
+	  /* Clear the error, next0 will be overwritten by the tunnel */
+	  error1 = 0;
+
+	  // Backup the IP4 checksum and address
+	  sum1 = ip4_1->checksum;
+	  old1 = ip4_1->dst_address.as_u32;
+
+	  // Update IP address of the packet using the src from the tunnel
+	  ip4_1->dst_address.as_u32 = t1->src.ip4.as_u32;
+
+	  // Fix the IP4 checksum
+	  sum1 = ip_csum_update (sum1, old1, ip4_1->dst_address.as_u32,
+				 ip4_header_t, dst_address /* changed member */);
+	  ip4_1->checksum = ip_csum_fold (sum1);
 
 	next1:
 	  /* Pop gtpu header / push IP+UDP header  */
@@ -671,6 +738,12 @@ gtpu_input (vlib_main_t * vm,
               tr->error = error1;
               tr->tunnel_index = tunnel_index1;
               tr->teid = has_space1 ? clib_net_to_host_u32(gtpu1->teid) : ~0;
+	      if (vlib_buffer_has_space (b1, 4))
+		{
+		  tr->header.ver_flags = gtpu1->ver_flags;
+		  tr->header.type = gtpu1->type;
+		  tr->header.length = clib_net_to_host_u16 (gtpu1->length);
+		}
             }
 
 	  vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
@@ -728,63 +801,29 @@ gtpu_input (vlib_main_t * vm,
 	  if (PREDICT_FALSE (gtpu0->type != 255))
 	    {
 	      /* This is an error/nonstandard packet
-               * Skip decap and update destination IP
+               * Check if it is to be forwarded.
 	       */
-	      has_space0 = 0;
-	      if (is_ip4) {
-		  /* Push the IP+UDP header instead */
-		  gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
-
-		  /* Search for a tunnel with teid 0 and destination IP 127.0.0.127 */
-		  key4_0.src = 0x7f00007fu;
-		  key4_0.teid = 0;
-
-		  p0 = hash_get (gtm->gtpu4_tunnel_by_key, key4_0.as_u64);
-		  if (PREDICT_FALSE (p0 == NULL))
-		    {
-		      error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
-		      next0 = GTPU_INPUT_NEXT_DROP;
-		      goto trace00;
-		    }
-		  // Get the tunnel index
-		  tunnel_index0 = p0[0];
-		  // Get the tunnel
-		  t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
-		  /* Validate GTPU tunnel encap-fib index against packet */
-
-		  if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
-		    {
-		      error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
-		      next0 = GTPU_INPUT_NEXT_DROP;
-		      goto trace00;
-		    }
-
-		  // Backup the IP4 checksum and address
-		  sum0 = ip4_0->checksum;
-		  old0 = ip4_0->dst_address.as_u32;
-
-		  // Update IP address of the packet using the src from the tunnel
-		  ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
-
-		  // Fix the IP4 checksum
-		  sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32, ip4_header_t, dst_address /* changed member */);
-		  ip4_0->checksum = ip_csum_fold (sum0);
-
-		  goto next00; /* valid forward tunnel */
-		}
-
-	      // The packet is ipv6
-	      error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
+	      error0 = GTPU_ERROR_UNSUPPORTED_TYPE;
 	      next0 = GTPU_INPUT_NEXT_DROP;
+
+	      // TODO: Need to refactor the test sequence for has_space0 test
+	      has_space0 =
+		vlib_buffer_has_space (b0, sizeof (gtpu_header_t) - 4);
+
+	      if (is_ip4)
+		tunnel_index0 = gtm->unknown_type_forward_tunnel_index_ipv4;
+
+	      if (PREDICT_FALSE (tunnel_index0 != ~0))
+		goto forward00;
+
 	      goto trace00;
 	    }
-
 	  /*
            * Manipulate gtpu header
            * TBD: Manipulate Sequence Number and N-PDU Number
            * TBD: Manipulate Next Extension Header
            */
-        if (PREDICT_TRUE ((gtpu0->ver_flags & GTPU_E_S_PN_BIT) != 0))
+        if (PREDICT_TRUE ((ver0 & GTPU_E_S_PN_BIT) != 0))
         {
             gtpu_hdr_len0 = sizeof (gtpu_header_t);
 
@@ -813,6 +852,16 @@ gtpu_input (vlib_main_t * vm,
             {
 	      error0 = has_space0 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
               next0 = GTPU_INPUT_NEXT_DROP;
+
+	      /* This is an unsupported/bad packet.
+               * Check if it is to be forwarded.
+	       */
+	      if (is_ip4)
+		tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv4;
+
+	      if (PREDICT_FALSE (tunnel_index0 != ~0))
+		goto forward00;
+
               goto trace00;
             }
 
@@ -828,46 +877,15 @@ gtpu_input (vlib_main_t * vm,
 		p0 = hash_get (gtm->gtpu4_tunnel_by_key, key4_0.as_u64);
                 if (PREDICT_FALSE (p0 == NULL))
                   {
-		    /* This is a standard packet, but no tunnel was found. Forward packet instead.
-		     * Push the IP+UDP header */
-		    gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
+		    error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
+		    next0 = GTPU_INPUT_NEXT_DROP;
 
-		    /* Search for a tunnel with teid 0 and destination IP 127.0.0.127 */
-		    key4_0.src = 0x7f00007fu;
-		    key4_0.teid = 0;
-
-		    p0 = hash_get (gtm->gtpu4_tunnel_by_key, key4_0.as_u64);
-		    if (PREDICT_FALSE (p0 == NULL))
-		      {
-			error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
-			next0 = GTPU_INPUT_NEXT_DROP;
-			goto trace00;
-		      }
-		    // Get the tunnel index
-		    tunnel_index0 = p0[0];
-		    // Get the tunnel
-		    t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
-		    /* Validate GTPU tunnel encap-fib index against packet */
-
-		    if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
-		      {
-			error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
-			next0 = GTPU_INPUT_NEXT_DROP;
-			goto trace00;
-		      }
-
-		    // Backup the IP4 checksum and address
-		    sum0 = ip4_0->checksum;
-		    old0 = ip4_0->dst_address.as_u32;
-
-		    // Update IP address of the packet using the src from the tunnel
-		    ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
-
-		    // Fix the IP4 checksum
-		    sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32, ip4_header_t, dst_address /* changed member */);
-		    ip4_0->checksum = ip_csum_fold (sum0);
-
-		    goto next00; /* valid forward tunnel */
+		    /* This is a standard packet, but no tunnel was found.
+		     * Check if it is to be forwarded. */
+		    tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+		    if (PREDICT_FALSE (tunnel_index0 != ~0))
+		      goto forward00;
+		    goto trace00;
                   }
 		// Update the key/tunnel cache for normal packets
                 last_key4.as_u64 = key4_0.as_u64;
@@ -882,6 +900,9 @@ gtpu_input (vlib_main_t * vm,
 	      {
 		error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
 		next0 = GTPU_INPUT_NEXT_DROP;
+		tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+		if (PREDICT_FALSE (tunnel_index0 != ~0))
+		  goto forward00;
 		goto trace00;
 	      }
 
@@ -902,6 +923,9 @@ gtpu_input (vlib_main_t * vm,
 	      }
 	    error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
 	    next0 = GTPU_INPUT_NEXT_DROP;
+	    tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv4;
+	    if (PREDICT_FALSE (tunnel_index0 != ~0))
+	      goto forward00;
 	    goto trace00;
 
           } else /* !is_ip4 */ {
@@ -956,6 +980,37 @@ gtpu_input (vlib_main_t * vm,
 	    goto trace00;
           }
 
+	/* This can only be reached via goto */
+	forward00:
+	  /* Forward packet instead. Push the IP+UDP header */
+	  gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
+
+	  // Get the tunnel
+	  t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
+
+	  /* Validate GTPU tunnel encap-fib index against packet */
+	  if (PREDICT_FALSE (validate_gtpu_fib (b0, t0, is_ip4) == 0))
+	    {
+	      error0 = GTPU_ERROR_NO_ERROR_TUNNEL;
+	      next0 = GTPU_INPUT_NEXT_DROP;
+	      goto trace00;
+	    }
+
+	  /* Clear the error, next0 will be overwritten by the tunnel */
+	  error0 = 0;
+
+	  // Backup the IP4 checksum and address
+	  sum0 = ip4_0->checksum;
+	  old0 = ip4_0->dst_address.as_u32;
+
+	  // Update IP address of the packet using the src from the tunnel
+	  ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
+
+	  // Fix the IP4 checksum
+	  sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32,
+				 ip4_header_t, dst_address /* changed member */);
+	  ip4_0->checksum = ip_csum_fold (sum0);
+
 	next00:
 	  /* Pop gtpu header / push IP+UDP header */
 	  vlib_buffer_advance (b0, gtpu_hdr_len0);
@@ -1003,6 +1058,12 @@ gtpu_input (vlib_main_t * vm,
               tr->error = error0;
               tr->tunnel_index = tunnel_index0;
               tr->teid = has_space0 ? clib_net_to_host_u32(gtpu0->teid) : ~0;
+	      if (vlib_buffer_has_space (b0, 4))
+		{
+		  tr->header.ver_flags = gtpu0->ver_flags;
+		  tr->header.type = gtpu0->type;
+		  tr->header.length = clib_net_to_host_u16 (gtpu0->length);
+		}
             }
 	  vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
 					   to_next, n_left_to_next,
@@ -1818,6 +1879,12 @@ trace0:
               tr->error = error0;
               tr->tunnel_index = tunnel_index0;
               tr->teid = has_space0 ? clib_net_to_host_u32(gtpu0->teid) : ~0;
+	      if (vlib_buffer_has_space (b0, 4))
+		{
+		  tr->header.ver_flags = gtpu0->ver_flags;
+		  tr->header.type = gtpu0->type;
+		  tr->header.length = clib_net_to_host_u16 (gtpu0->length);
+		}
             }
 
       	  if (ip_err1 || udp_err1 || csum_err1)
@@ -1928,6 +1995,12 @@ trace1:
               tr->error = error1;
               tr->tunnel_index = tunnel_index1;
               tr->teid = has_space1 ? clib_net_to_host_u32(gtpu1->teid) : ~0;
+	      if (vlib_buffer_has_space (b1, 4))
+		{
+		  tr->header.ver_flags = gtpu1->ver_flags;
+		  tr->header.type = gtpu1->type;
+		  tr->header.length = clib_net_to_host_u16 (gtpu1->length);
+		}
             }
 
     	    vlib_validate_buffer_enqueue_x2 (vm, node, next_index,
@@ -2071,6 +2144,12 @@ trace1:
                 tr->error = error0;
                 tr->tunnel_index = tunnel_index0;
                 tr->teid = has_space0 ? clib_net_to_host_u32(gtpu0->teid) : ~0;
+		if (vlib_buffer_has_space (b0, 4))
+		  {
+		    tr->header.ver_flags = gtpu0->ver_flags;
+		    tr->header.type = gtpu0->type;
+		    tr->header.length = clib_net_to_host_u16 (gtpu0->length);
+		  }
               }
       	    vlib_validate_buffer_enqueue_x1 (vm, node, next_index,
       					   to_next, n_left_to_next,
