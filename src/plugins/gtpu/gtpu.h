@@ -113,6 +113,7 @@ typedef CLIB_PACKED( struct {
 
 #define GTPU_VER_MASK (7<<5)
 #define GTPU_PT_BIT   (1<<4)
+#define GTPU_RES_BIT  (1<<3)
 #define GTPU_E_BIT    (1<<2)
 #define GTPU_S_BIT    (1<<1)
 #define GTPU_PN_BIT   (1<<0)
