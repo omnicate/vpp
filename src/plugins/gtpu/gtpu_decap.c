@@ -140,6 +140,10 @@ gtpu_input (vlib_main_t * vm,
 	  udp_header_t * udp0, * udp1;
 	  ip_csum_t sum0, sum1;
 	  u32 old0, old1;
+	  gtpu_ext_header_t ext = {.type = 0, .len = 0, .pad = 0};
+	  gtpu_ext_header_t *ext0, *ext1;
+	  bool is_fast_track0, is_fast_track1;
+	  ext0 = ext1 = &ext;
 
 	  /* Prefetch next iteration. */
 	  {
@@ -207,76 +211,85 @@ gtpu_input (vlib_main_t * vm,
            * TBD: Manipulate Sequence Number and N-PDU Number
            * TBD: Manipulate Next Extension Header
            */
-        if (PREDICT_TRUE ((gtpu0->ver_flags & GTPU_E_S_PN_BIT) != 0))
-        {
+
+	  /* Perform all test assuming the packet has the needed space.
+	   * Check if version 1, not PT, not reserved.
+	   * Check message type 255.
+	   */
+	  is_fast_track0 = ((ver0 & (GTPU_VER_MASK | GTPU_PT_BIT | GTPU_RES_BIT)) == (GTPU_V1_VER | GTPU_PT_BIT));
+	  is_fast_track0 = is_fast_track0 & (gtpu0->type == 255);
+
+	  is_fast_track1 = ((ver1 & (GTPU_VER_MASK | GTPU_PT_BIT | GTPU_RES_BIT)) == (GTPU_V1_VER | GTPU_PT_BIT));
+	  is_fast_track1 = is_fast_track1 & (gtpu1->type == 255);
+
+	  /* Make the header overlap the end of the gtpu_header_t, so
+	   * that it starts with the same Next extension header as the
+	   * gtpu_header_t.
+	   * This means that the gtpu_ext_header_t (ext) has the type
+	   * from the previous header and the length from the current one.
+	   * Works both for the first gtpu_header_t and all following
+	   * gtpu_ext_header_t extensions.
+	   * Copy the ext data if the E bit is set, else use the 0 value.
+	   */
+	  ext0 = (ver0 & GTPU_E_BIT) ? (gtpu_ext_header_t *) &gtpu0->next_ext_type : &ext;
+	  ext1 = (ver1 & GTPU_E_BIT) ? (gtpu_ext_header_t *) &gtpu1->next_ext_type : &ext;
+
 	  /* One or more of the E, S and PN flags are set, so all 3 fields
 	   * must be present:
 	   * The gtpu_header_t contains the Sequence number, N-PDU number and
 	   * Next extension header type.
-	   * Unused fields are zero.
+	   * If E is not set subtract 4 bytes from the header.
+	   * Then add the length of the extension. 0 * 4 if E is not set,
+	   * else it's the ext->len from the gtp extension. Length is multiple
+	   * of 4 always.
+	   * Note: This length is only valid if the header itself is valid,
+	   * so it must be verified before use.
 	   */
-	  gtpu_hdr_len0 = sizeof (gtpu_header_t);
+	  gtpu_hdr_len0 = sizeof (gtpu_header_t) - (((ver0 & GTPU_E_S_PN_BIT) == 0) * 4) + ext0->len * 4;
+	  gtpu_hdr_len1 = sizeof (gtpu_header_t) - (((ver1 & GTPU_E_S_PN_BIT) == 0) * 4) + ext1->len * 4;
 
-            if (PREDICT_TRUE ((gtpu0->ver_flags & GTPU_E_BIT) != 0))
-            {
-	      /* Make the header overlap the end of the gtpu_header_t, so
-	       * that it starts with the same Next extension header as the
-	       * gtpu_header_t.
-	       * This means that the gtpu_ext_header_t (ext) has the type
-	       * from the previous header and the length from the current one.
-	       * Works both for the first gtpu_header_t and all following
-	       * gtpu_ext_header_t extensions.
-	       */
-	      gtpu_ext_header_t *ext =
-                        (gtpu_ext_header_t *) & gtpu0->next_ext_type;
-                u8 *end = vlib_buffer_get_tail (b0);
-
-                while ((u8 *) ext < end && ext->type != 0)
-                {
-                    /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
-                    gtpu_hdr_len0 += ext->len * 4;
-                    ext += ext->len * 4 / sizeof (*ext);
-                }
-            }
-        }
-        else
-        {
-	  /* The gtpu_header_t is missing the Sequence number, N-PDU number
-	   * and Next extension header type.
-	   * This makes it 4 bytes shorter
+	  /* Get the next extension, unconditionally.
+	   * If E was not set in the gtp header ext->len is zero.
+	   * If E was set ext0 will now point to the packet buffer.
+	   * If the gtp packet is illegal this might point outside the buffer.
+	   * TBD check the updated for ext0->type != 0, and continue removing
+	   * extensions.
 	   */
-	  gtpu_hdr_len0 = sizeof (gtpu_header_t) - 4;
-        }
+	  ext0 += ext0->len * 4 / sizeof (*ext0);
+	  ext1 += ext1->len * 4 / sizeof (*ext1);
 
-        if (PREDICT_TRUE ((gtpu1->ver_flags & GTPU_E_S_PN_BIT) != 0))
-        {
-            gtpu_hdr_len1 = sizeof (gtpu_header_t);
-
-            if (PREDICT_TRUE ((gtpu1->ver_flags & GTPU_E_BIT) != 0))
-            {
-                gtpu_ext_header_t *ext =
-                        (gtpu_ext_header_t *) & gtpu1->next_ext_type;
-                u8 *end = vlib_buffer_get_tail (b1);
-
-                while ((u8 *) ext < end && ext->type != 0)
-                {
-                    /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
-                    gtpu_hdr_len1 += ext->len * 4;
-                    ext += ext->len * 4 / sizeof (*ext);
-                }
-            }
-        }
-        else
-        {
-            gtpu_hdr_len1 = sizeof (gtpu_header_t) - 4;
-        }
-
+	  /* Check the space, if this is true then ext0 points to a valid
+	   * location in the buffer as well.
+	   */
           has_space0 = vlib_buffer_has_space (b0, gtpu_hdr_len0);
           has_space1 = vlib_buffer_has_space (b1, gtpu_hdr_len1);
 
-	  // This is where the packet paths diverge
-	  if (PREDICT_FALSE (gtpu0->type != 255))
+	  /* Diverge the packet paths for 0 and 1 */
+	  if (PREDICT_FALSE ((!is_fast_track0) | (!has_space0)))
 	    {
+	      /* Not fast path. ext0 and gtpu_hdr_len0 might be wrong */
+
+	      /* GCC will hopefully fix the duplicate compute */
+	      if (PREDICT_FALSE(!((ver0 & (GTPU_VER_MASK | GTPU_PT_BIT | GTPU_RES_BIT)) == (GTPU_V1_VER | GTPU_PT_BIT)) | (!has_space0)))
+		{
+		  /* The header or size is wrong */
+		  error0 = has_space0 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
+		  next0 = GTPU_INPUT_NEXT_DROP;
+
+		  /* This is an unsupported/bad packet.
+		   * Check if it is to be forwarded.
+		   */
+		  if (is_ip4)
+		    tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv4;
+
+		  if (PREDICT_FALSE (tunnel_index0 != ~0))
+		    goto forward0;
+
+		  goto trace0;
+		}
+	      /*  Correct version and has the space. It can only be unknown
+	       * message type.
+	       */
 	      error0 = GTPU_ERROR_UNSUPPORTED_TYPE;
 	      next0 = GTPU_INPUT_NEXT_DROP;
 
@@ -288,24 +301,7 @@ gtpu_input (vlib_main_t * vm,
 	      if (PREDICT_FALSE (tunnel_index0 != ~0))
 		goto forward0;
 
-	      // The packet is ipv6/not forwarded
-	      goto trace0;
-	    }
-
-	  if (PREDICT_FALSE (((ver0 & GTPU_VER_MASK) != GTPU_V1_VER) | (!has_space0)))
-	    {
-	      error0 = has_space0 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
-	      next0 = GTPU_INPUT_NEXT_DROP;
-
-	      /* This is an unsupported/bad packet.
-               * Check if it is to be forwarded.
-	       */
-	      if (is_ip4)
-		tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv4;
-
-	      if (PREDICT_FALSE (tunnel_index0 != ~0))
-		goto forward0;
-
+	      /* The packet is ipv6/not forwarded */
 	      goto trace0;
 	    }
 
@@ -513,39 +509,44 @@ gtpu_input (vlib_main_t * vm,
 		}
             }
 
-          // End of processing for packet 0
-
-	  if (PREDICT_FALSE (gtpu1->type != 255))
+          /* End of processing for packet 0, start for packet 1 */
+	  if (PREDICT_FALSE ((!is_fast_track1) | (!has_space1)))
 	    {
-	      /* This is an error/nonstandard packet.
-	       * Check if it is to be forwarded.
+	      /* Not fast path. ext0 and gtpu_hdr_len0 might be wrong */
+
+	      /* GCC will hopefully fix the duplicate compute */
+	      if (PREDICT_FALSE(!((ver1 & (GTPU_VER_MASK | GTPU_PT_BIT | GTPU_RES_BIT)) == (GTPU_V1_VER | GTPU_PT_BIT)) | (!has_space1)))
+		{
+		  /* The header or size is wrong */
+		  error1 = has_space1 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
+		  next1 = GTPU_INPUT_NEXT_DROP;
+
+		  /* This is an unsupported/bad packet.
+		   * Check if it is to be forwarded.
+		   */
+		  if (is_ip4)
+		    tunnel_index1 = gtm->bad_header_forward_tunnel_index_ipv4;
+
+		  if (PREDICT_FALSE (tunnel_index1 != ~0))
+		    goto forward1;
+
+		  goto trace1;
+		}
+	      /* Correct version and has the space. It can only be unknown
+	       * message type.
 	       */
 	      error1 = GTPU_ERROR_UNSUPPORTED_TYPE;
 	      next1 = GTPU_INPUT_NEXT_DROP;
 
+	      /* This is an error/nonstandard packet
+               * Check if it is to be forwarded. */
 	      if (is_ip4)
 		tunnel_index1 = gtm->unknown_type_forward_tunnel_index_ipv4;
 
 	      if (PREDICT_FALSE (tunnel_index1 != ~0))
 		goto forward1;
 
-	      // The packet is ipv6
-	      goto trace1;
-	    }
-	  if (PREDICT_FALSE (((ver1 & GTPU_VER_MASK) != GTPU_V1_VER) | (!has_space1)))
-	    {
-	      error1 = has_space1 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
-	      next1 = GTPU_INPUT_NEXT_DROP;
-
-	      /* This is an unsupported/bad packet.
-               * Check if it is to be forwarded.
-	       */
-	      if (is_ip4)
-		tunnel_index1 = gtm->bad_header_forward_tunnel_index_ipv4;
-
-	      if (PREDICT_FALSE (tunnel_index1 != ~0))
-		goto forward1;
-
+	      /* The packet is ipv6/not forwarded */
 	      goto trace1;
 	    }
 
@@ -773,6 +774,10 @@ gtpu_input (vlib_main_t * vm,
 	  udp_header_t * udp0;
 	  ip_csum_t sum0;
 	  u32 old0;
+	  gtpu_ext_header_t ext = {.type = 0, .len = 0, .pad = 0};
+	  gtpu_ext_header_t *ext0;
+	  bool is_fast_track0;
+	  ext0 = &ext;
 
 	  bi0 = from[0];
 	  to_next[0] = bi0;
@@ -797,73 +802,62 @@ gtpu_input (vlib_main_t * vm,
 
           /* speculatively load gtp header version field */
           ver0 = gtpu0->ver_flags;
+	  /*
+           * Manipulate gtpu header
+           * TBD: Manipulate Sequence Number and N-PDU Number
+           * TBD: Manipulate Next Extension Header
+           */
 
-	  if (PREDICT_FALSE (gtpu0->type != 255))
+          is_fast_track0 = ((ver0 & (GTPU_VER_MASK | GTPU_PT_BIT | GTPU_RES_BIT)) == (GTPU_V1_VER | GTPU_PT_BIT));
+          is_fast_track0 = is_fast_track0 & (gtpu0->type == 255);
+
+	  ext0 = (ver0 & GTPU_E_BIT) ? (gtpu_ext_header_t *) &gtpu0->next_ext_type : &ext;
+
+	  gtpu_hdr_len0 = sizeof (gtpu_header_t) - (((ver0 & GTPU_E_S_PN_BIT) == 0) * 4) + ext0->len * 4;
+
+	  ext0 += ext0->len * 4 / sizeof (*ext0);
+
+          has_space0 = vlib_buffer_has_space (b0, gtpu_hdr_len0);
+
+	  if (PREDICT_FALSE ((!is_fast_track0) | (!has_space0)))
 	    {
-	      /* This is an error/nonstandard packet
-               * Check if it is to be forwarded.
+	      /* Not fast path. ext0 and gtpu_hdr_len0 might be wrong */
+
+	      /* GCC will hopefully fix the duplicate compute */
+	      if (PREDICT_FALSE(!((ver0 & (GTPU_VER_MASK | GTPU_PT_BIT | GTPU_RES_BIT)) == (GTPU_V1_VER | GTPU_PT_BIT)) | (!has_space0)))
+		{
+		  /* The header or size is wrong */
+		  error0 = has_space0 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
+		  next0 = GTPU_INPUT_NEXT_DROP;
+
+		  /* This is an unsupported/bad packet.
+		   * Check if it is to be forwarded.
+		   */
+		  if (is_ip4)
+		    tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv4;
+
+		  if (PREDICT_FALSE (tunnel_index0 != ~0))
+		    goto forward00;
+
+		  goto trace00;
+		}
+	      /* Correct version and has the space. It can only be unknown
+	       * message type
 	       */
 	      error0 = GTPU_ERROR_UNSUPPORTED_TYPE;
 	      next0 = GTPU_INPUT_NEXT_DROP;
 
-	      // TODO: Need to refactor the test sequence for has_space0 test
-	      has_space0 =
-		vlib_buffer_has_space (b0, sizeof (gtpu_header_t) - 4);
-
+	      /* This is an error/nonstandard packet
+               * Check if it is to be forwarded. */
 	      if (is_ip4)
 		tunnel_index0 = gtm->unknown_type_forward_tunnel_index_ipv4;
 
 	      if (PREDICT_FALSE (tunnel_index0 != ~0))
 		goto forward00;
 
+	      /* The packet is ipv6/not forwarded */
 	      goto trace00;
 	    }
-	  /*
-           * Manipulate gtpu header
-           * TBD: Manipulate Sequence Number and N-PDU Number
-           * TBD: Manipulate Next Extension Header
-           */
-        if (PREDICT_TRUE ((ver0 & GTPU_E_S_PN_BIT) != 0))
-        {
-            gtpu_hdr_len0 = sizeof (gtpu_header_t);
-
-            if (PREDICT_TRUE ((gtpu0->ver_flags & GTPU_E_BIT) != 0))
-            {
-                gtpu_ext_header_t *ext =
-                        (gtpu_ext_header_t *) & gtpu0->next_ext_type;
-                u8 *end = vlib_buffer_get_tail (b0);
-
-                while ((u8 *) ext < end && ext->type != 0)
-                {
-                    /* gtpu_ext_header_t is 4 bytes and the len is in units of 4 */
-                    gtpu_hdr_len0 += ext->len * 4;
-                    ext += ext->len * 4 / sizeof (*ext);
-                }
-            }
-        }
-        else
-        {
-            gtpu_hdr_len0 = sizeof (gtpu_header_t) - 4;
-        }
-
-          has_space0 = vlib_buffer_has_space (b0, gtpu_hdr_len0);
-
-	  if (PREDICT_FALSE (((ver0 & GTPU_VER_MASK) != GTPU_V1_VER) | (!has_space0)))
-            {
-	      error0 = has_space0 ? GTPU_ERROR_BAD_VER : GTPU_ERROR_TOO_SMALL;
-              next0 = GTPU_INPUT_NEXT_DROP;
-
-	      /* This is an unsupported/bad packet.
-               * Check if it is to be forwarded.
-	       */
-	      if (is_ip4)
-		tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv4;
-
-	      if (PREDICT_FALSE (tunnel_index0 != ~0))
-		goto forward00;
-
-              goto trace00;
-            }
 
           if (is_ip4) {
             key4_0.src = ip4_0->src_address.as_u32;
