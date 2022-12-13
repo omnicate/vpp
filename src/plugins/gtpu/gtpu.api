@@ -19,11 +19,20 @@ import "vnet/ip/ip_types.api";
 
 enum gtpu_forwarding_type
 {
-  GTPU_FORWARDING_API_NONE = 0,
-  GTPU_FORWARDING_API_BAD_HEADER = 1,
-  GTPU_FORWARDING_API_UNKNOWN_TEID = 2,
-  GTPU_FORWARDING_API_UNKNOWN_TYPE = 4,
+  GTPU_API_FORWARDING_NONE = 0,
+  GTPU_API_FORWARDING_BAD_HEADER = 1,
+  GTPU_API_FORWARDING_UNKNOWN_TEID = 2,
+  GTPU_API_FORWARDING_UNKNOWN_TYPE = 4,
 };
+
+enum gtpu_decap_next_type
+{
+  GTPU_API_DECAP_NEXT_DROP = 0,
+  GTPU_API_DECAP_NEXT_L2 = 1,
+  GTPU_API_DECAP_NEXT_IP4 = 2,
+  GTPU_API_DECAP_NEXT_IP6 = 3,
+};
+
 
 /** \brief Create or delete a GTPU tunnel
     @param client_index - opaque cookie to identify the sender
@@ -36,8 +45,8 @@ enum gtpu_forwarding_type
     @param decap_next_index - the index of the next node if success
     @param teid - Local (rx) Tunnel Endpoint Identifier
     @param tteid - Remote (tx) Tunnel Endpoint Identifier
-    @param pdu_enable - Add PDU extension
-    @param qfi - The QFI to set in the PDU, 6 bits only
+    @param pdu_enable - Add PDU session container to extension headers
+    @param qfi - QFI to set in PDU session container, 6 bits only
 */
 define gtpu_add_del_tunnel
 {
@@ -112,7 +121,7 @@ define gtpu_tunnel_dump
     @param tteid - Remote (tx) Tunnel Endpoint Identifier
     @param pdu_enable - add PDU extension to each packet
     @param qfi - the QFI to set in the PDU, 6 bits only
-    @param is_forwarding - the tunnel is used for forwarding packets
+    @param is_forwarding - tunnel used for forwarding packets
     @param forwarding_type - the type of packets forwarded
 */
 define gtpu_tunnel_details
