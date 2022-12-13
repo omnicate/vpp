@@ -569,11 +569,6 @@ api_gtpu_add_del_forward (vat_main_t * vam)
       errmsg ("dst must be set to a valid IP address");
       return -99;
     }
-  if (ipv6_set)
-    {
-      errmsg("ipv6 not supported yet");
-      return -99;
-    }
 
   M (GTPU_ADD_DEL_FORWARD, mp);
 

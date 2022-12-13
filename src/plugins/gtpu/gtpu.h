@@ -139,11 +139,17 @@ typedef CLIB_PACKED( struct {
 #define GTPU_FORWARD_UNKNOWN_TEID_ADDRESS_IPV4 0x8000007fu
 #define GTPU_FORWARD_UNKNOWN_TYPE_ADDRESS_IPV4 0x8100007fu
 
-/* the ipv6 addresses used for the forwarding tunnels. TBD */
-//#define GTPU_FORWARD_BAD_HEADER_ADDRESS_IPV6 {0x2001,0x0db8,0xffff,0xffff,0xffff,0xffff,0xffff,0xfffd}
-//#define GTPU_FORWARD_UNKNOWN_TEID_ADDRESS_IPV6 {0x2001,0x0db8,0xffff,0xffff,0xffff,0xffff,0xffff,0xfffe}
-//#define GTPU_FORWARD_UNKNOWN_TYPE_ADDRESS_IPV6 {0x2001,0x0db8,0xffff,0xffff,0xffff,0xffff,0xffff,0xffff}
-
+/* the ipv6 addresses used for the forwarding tunnels.
+ * 2001:db8:ffff:ffff:ffff:ffff:ffff:fffd - 2001:db8:ffff:ffff:ffff:ffff:ffff:ffff*/
+#define GTPU_FORWARD_BAD_HEADER_ADDRESS_IPV6 { \
+    .as_u64[0] = 0xffffffffb80d0120ull, \
+    .as_u64[1] = 0xfdffffffffffffffull}
+#define GTPU_FORWARD_UNKNOWN_TEID_ADDRESS_IPV6 { \
+    .as_u64[0] = 0xffffffffb80d0120ull,          \
+    .as_u64[1] = 0xfeffffffffffffffull}
+#define GTPU_FORWARD_UNKNOWN_TYPE_ADDRESS_IPV6 { \
+    .as_u64[0] = 0xffffffffb80d0120ull,          \
+    .as_u64[1] = 0xffffffffffffffffull}
 /* *INDENT-OFF* */
 typedef CLIB_PACKED(struct
 {
@@ -317,6 +323,9 @@ typedef struct
   u32 bad_header_forward_tunnel_index_ipv4;
   u32 unknown_teid_forward_tunnel_index_ipv4;
   u32 unknown_type_forward_tunnel_index_ipv4;
+  u32 bad_header_forward_tunnel_index_ipv6;
+  u32 unknown_teid_forward_tunnel_index_ipv6;
+  u32 unknown_type_forward_tunnel_index_ipv6;
 
   /* convenience */
   vlib_main_t *vlib_main;
