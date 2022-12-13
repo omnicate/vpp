@@ -406,9 +406,11 @@ int vnet_gtpu_add_del_forwarding
 {
   gtpu_main_t *gtm = &gtpu_main;
   bool is_add;
-  u32 current_index_value;
+  u32 current_index_value, current_index_value_ipv6;
   u32 address_tabel_ipv4;
+  ip6_address_t address_tabel_ipv6;
   u32 sw_if_index = ~0;
+  bool is_ip6 = !ip46_address_is_ip4 (&a->dst);
   int rv;
   /* Check for errors */
   if (!a->is_forwarding)
@@ -434,21 +436,32 @@ int vnet_gtpu_add_del_forwarding
     {
     case GTPU_FORWARD_BAD_HEADER:
       current_index_value = gtm->bad_header_forward_tunnel_index_ipv4;
+      current_index_value_ipv6 = gtm->bad_header_forward_tunnel_index_ipv6;
       address_tabel_ipv4 = GTPU_FORWARD_BAD_HEADER_ADDRESS_IPV4;
       /* ipv6 is TBD */
-      //address_tabel_ipv6 = GTPU_FORWARD_BAD_HEADER_ADDRESS_IPV6;
+      ip6_address_t address_tabel_ipv6_ = GTPU_FORWARD_BAD_HEADER_ADDRESS_IPV6;
+      address_tabel_ipv6 = address_tabel_ipv6_;
       break;
     case GTPU_FORWARD_UNKNOWN_TEID:
       current_index_value = gtm->unknown_teid_forward_tunnel_index_ipv4;
+      current_index_value_ipv6 = gtm->unknown_teid_forward_tunnel_index_ipv6;
       address_tabel_ipv4 = GTPU_FORWARD_UNKNOWN_TEID_ADDRESS_IPV4;
+      ip6_address_t address_tabel_ipv6__ = GTPU_FORWARD_UNKNOWN_TEID_ADDRESS_IPV6;
+      address_tabel_ipv6 = address_tabel_ipv6__;
       break;
     case GTPU_FORWARD_UNKNOWN_TYPE:
       current_index_value = gtm->unknown_type_forward_tunnel_index_ipv4;
+      current_index_value_ipv6 = gtm->unknown_type_forward_tunnel_index_ipv6;
       address_tabel_ipv4 = GTPU_FORWARD_UNKNOWN_TYPE_ADDRESS_IPV4;
+      ip6_address_t address_tabel_ipv6___ = GTPU_FORWARD_UNKNOWN_TYPE_ADDRESS_IPV6;
+      address_tabel_ipv6 = address_tabel_ipv6___;
       break;
     default:
       return VNET_API_ERROR_INVALID_ARGUMENT;
     }
+
+  if (is_ip6)
+    current_index_value = current_index_value_ipv6;
 
   /* Check if the existing forwarding rule state conflicts with this operation */
   if ((is_add) && (current_index_value != ~0))
@@ -477,7 +490,10 @@ int vnet_gtpu_add_del_forwarding
   /* src is the tunnel lookup key, so it is fixed.
    * dst is used for the new target */
   a->src = a->dst;
-  a->dst.ip4.as_u32 = address_tabel_ipv4;
+  if (is_ip6)
+    a->dst.ip6 = address_tabel_ipv6;
+  else
+    a->dst.ip4.as_u32 = address_tabel_ipv4;
   rv = vnet_gtpu_add_mod_del_tunnel (a, &sw_if_index);
 
   // Forward only if not nil
@@ -492,13 +508,23 @@ int vnet_gtpu_add_del_forwarding
   switch (a->forwarding_type)
     {
     case GTPU_FORWARD_BAD_HEADER:
-      gtm->bad_header_forward_tunnel_index_ipv4 = tunnel_index;
+      if (is_ip6)
+	gtm->bad_header_forward_tunnel_index_ipv6 = tunnel_index;
+      else
+	gtm->bad_header_forward_tunnel_index_ipv4 = tunnel_index;
+
       break;
     case GTPU_FORWARD_UNKNOWN_TEID:
-      gtm->unknown_teid_forward_tunnel_index_ipv4 = tunnel_index;
+      if (is_ip6)
+	gtm->unknown_teid_forward_tunnel_index_ipv6 = tunnel_index;
+      else
+	gtm->unknown_teid_forward_tunnel_index_ipv4 = tunnel_index;
       break;
     case GTPU_FORWARD_UNKNOWN_TYPE:
-      gtm->unknown_type_forward_tunnel_index_ipv4 = tunnel_index;
+      if (is_ip6)
+	gtm->unknown_type_forward_tunnel_index_ipv6 = tunnel_index;
+      else
+	gtm->unknown_type_forward_tunnel_index_ipv4 = tunnel_index;
       break;
     }
   return 0;
@@ -1490,11 +1516,6 @@ gtpu_forward_command_fn (vlib_main_t * vm,
       error = clib_error_return (0, "dst must be set to a valid IP address");
       goto done;
     }
-  if (ipv6_set)
-    {
-      error = clib_error_return (0, "ipv6 not supported yet");
-      goto done;
-    }
 
   a->opn = is_add ? GTPU_ADD_TUNNEL : GTPU_DEL_TUNNEL;
 #define _(x) a->x = x;
@@ -1573,6 +1594,9 @@ gtpu_init (vlib_main_t * vm)
   gtm->bad_header_forward_tunnel_index_ipv4 = ~0;
   gtm->unknown_teid_forward_tunnel_index_ipv4 = ~0;
   gtm->unknown_type_forward_tunnel_index_ipv4 = ~0;
+  gtm->bad_header_forward_tunnel_index_ipv6 = ~0;
+  gtm->unknown_teid_forward_tunnel_index_ipv6 = ~0;
+  gtm->unknown_type_forward_tunnel_index_ipv6 = ~0;
 
   return 0;
 }

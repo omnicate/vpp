@@ -292,13 +292,6 @@ vl_api_gtpu_add_del_forward_t_handler
   a.encap_fib_index = fib_table_find (fib_ip_proto (is_ipv6),
 				      ntohl (mp->encap_vrf_id));
 
-  if (is_ipv6)
-    {
-      /* ipv6 support TBD */
-      rv = VNET_API_ERROR_INVALID_ADDRESS_FAMILY;
-      goto out;
-    }
-
   if (a.encap_fib_index == ~0)
     {
       rv = VNET_API_ERROR_NO_SUCH_FIB;

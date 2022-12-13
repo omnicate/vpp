@@ -281,6 +281,8 @@ gtpu_input (vlib_main_t * vm,
 		   */
 		  if (is_ip4)
 		    tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv4;
+		  else
+		    tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv6;
 
 		  if (PREDICT_FALSE (tunnel_index0 != ~0))
 		    goto forward0;
@@ -297,6 +299,8 @@ gtpu_input (vlib_main_t * vm,
                * Check if it is to be forwarded. */
 	      if (is_ip4)
 		tunnel_index0 = gtm->unknown_type_forward_tunnel_index_ipv4;
+	      else
+		tunnel_index0 = gtm->unknown_type_forward_tunnel_index_ipv6;
 
 	      if (PREDICT_FALSE (tunnel_index0 != ~0))
 		goto forward0;
@@ -381,6 +385,11 @@ gtpu_input (vlib_main_t * vm,
                   {
                     error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
                     next0 = GTPU_INPUT_NEXT_DROP;
+		    /* This is a standard packet, but no tunnel was found.
+		     * Check if it is to be forwarded. */
+		    tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+		    if (PREDICT_FALSE (tunnel_index0 != ~0))
+		      goto forward0;
                     goto trace0;
                   }
                 clib_memcpy_fast (&last_key6, &key6_0, sizeof(key6_0));
@@ -395,6 +404,9 @@ gtpu_input (vlib_main_t * vm,
 	      {
 		error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
 		next0 = GTPU_INPUT_NEXT_DROP;
+		tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+		if (PREDICT_FALSE (tunnel_index0 != ~0))
+		  goto forward0;
 		goto trace0;
 	      }
 
@@ -416,13 +428,13 @@ gtpu_input (vlib_main_t * vm,
 	      }
 	    error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
 	    next0 = GTPU_INPUT_NEXT_DROP;
+	    tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+	    if (PREDICT_FALSE (tunnel_index0 != ~0))
+	      goto forward0;
 	    goto trace0;
           }
 	forward0:
-	  /* Forward packet instead. Push the IP+UDP header */
-	  gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
-
-	  // Get the tunnel
+	  /* Get the tunnel */
 	  t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
 
 	  /* Validate GTPU tunnel encap-fib index against packet */
@@ -436,17 +448,34 @@ gtpu_input (vlib_main_t * vm,
 	  /* Clear the error, next0 will be overwritten by the tunnel */
 	  error0 = 0;
 
-	  // Backup the IP4 checksum and address
-	  sum0 = ip4_0->checksum;
-	  old0 = ip4_0->dst_address.as_u32;
+	  if (is_ip4)
+	    {
+	      /* Forward packet instead. Push the IP+UDP header */
+	      gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
+	      /* Backup the IP4 checksum and address */
+	      sum0 = ip4_0->checksum;
+	      old0 = ip4_0->dst_address.as_u32;
 
-	  // Update IP address of the packet using the src from the tunnel
-	  ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
+	      /* Update IP address of the packet using the src from the tunnel */
+	      ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
 
-	  // Fix the IP4 checksum
-	  sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32,
-				 ip4_header_t, dst_address /* changed member */);
-	  ip4_0->checksum = ip_csum_fold (sum0);
+	      /* Fix the IP4 checksum */
+	      sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32,
+				     ip4_header_t,
+				     dst_address /* changed member */);
+	      ip4_0->checksum = ip_csum_fold (sum0);
+	    }
+	  else
+	    {
+	      /* Forward packet instead. Push the IP+UDP header */
+	      gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip6_header_t));
+	      /* IPv6 UDP checksum is mandatory */
+	      int bogus = 0;
+	      udp0->checksum = ip6_tcp_udp_icmp_compute_checksum(vm, b0,
+								  ip6_0, &bogus);
+	      if (udp0->checksum == 0)
+		udp0->checksum = 0xffff;
+	    }
 
 	next0:
 	  /* Pop/Remove gtpu header from buffered package or push existing IP+UDP header back to the buffer*/
@@ -512,7 +541,7 @@ gtpu_input (vlib_main_t * vm,
           /* End of processing for packet 0, start for packet 1 */
 	  if (PREDICT_FALSE ((!is_fast_track1) | (!has_space1)))
 	    {
-	      /* Not fast path. ext0 and gtpu_hdr_len0 might be wrong */
+	      /* Not fast path. ext1 and gtpu_hdr_len1 might be wrong */
 
 	      /* GCC will hopefully fix the duplicate compute */
 	      if (PREDICT_FALSE(!((ver1 & (GTPU_VER_MASK | GTPU_PT_BIT | GTPU_RES_BIT)) == (GTPU_V1_VER | GTPU_PT_BIT)) | (!has_space1)))
@@ -526,6 +555,8 @@ gtpu_input (vlib_main_t * vm,
 		   */
 		  if (is_ip4)
 		    tunnel_index1 = gtm->bad_header_forward_tunnel_index_ipv4;
+		  else
+		    tunnel_index1 = gtm->bad_header_forward_tunnel_index_ipv6;
 
 		  if (PREDICT_FALSE (tunnel_index1 != ~0))
 		    goto forward1;
@@ -542,6 +573,8 @@ gtpu_input (vlib_main_t * vm,
                * Check if it is to be forwarded. */
 	      if (is_ip4)
 		tunnel_index1 = gtm->unknown_type_forward_tunnel_index_ipv4;
+	      else
+		tunnel_index1 = gtm->unknown_type_forward_tunnel_index_ipv6;
 
 	      if (PREDICT_FALSE (tunnel_index1 != ~0))
 		goto forward1;
@@ -624,6 +657,9 @@ gtpu_input (vlib_main_t * vm,
                   {
                     error1 = GTPU_ERROR_NO_SUCH_TUNNEL;
                     next1 = GTPU_INPUT_NEXT_DROP;
+		    tunnel_index1 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+		    if (PREDICT_FALSE (tunnel_index1 != ~0))
+		      goto forward1;
                     goto trace1;
                   }
 
@@ -639,6 +675,9 @@ gtpu_input (vlib_main_t * vm,
 	      {
 		error1 = GTPU_ERROR_NO_SUCH_TUNNEL;
 		next1 = GTPU_INPUT_NEXT_DROP;
+		tunnel_index1 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+		if (PREDICT_FALSE (tunnel_index1 != ~0))
+		  goto forward1;
 		goto trace1;
 	      }
 
@@ -660,13 +699,14 @@ gtpu_input (vlib_main_t * vm,
 	      }
 	    error1 = GTPU_ERROR_NO_SUCH_TUNNEL;
 	    next1 = GTPU_INPUT_NEXT_DROP;
+	    tunnel_index1 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+	    if (PREDICT_FALSE (tunnel_index1 != ~0))
+	      goto forward1;
 	    goto trace1;
 	  }
 	forward1:
-	  /* Forward packet instead. Push the IP+UDP header */
-	  gtpu_hdr_len1 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
 
-	  // Get the tunnel
+	  /* Get the tunnel */
 	  t1 = pool_elt_at_index (gtm->tunnels, tunnel_index1);
 
 	  /* Validate GTPU tunnel encap-fib index against packet */
@@ -680,17 +720,35 @@ gtpu_input (vlib_main_t * vm,
 	  /* Clear the error, next0 will be overwritten by the tunnel */
 	  error1 = 0;
 
-	  // Backup the IP4 checksum and address
-	  sum1 = ip4_1->checksum;
-	  old1 = ip4_1->dst_address.as_u32;
+	  if (is_ip4)
+	    {
+	      /* Forward packet instead. Push the IP+UDP header */
+	      gtpu_hdr_len1 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
 
-	  // Update IP address of the packet using the src from the tunnel
-	  ip4_1->dst_address.as_u32 = t1->src.ip4.as_u32;
+	      /* Backup the IP4 checksum and address */
+	      sum1 = ip4_1->checksum;
+	      old1 = ip4_1->dst_address.as_u32;
 
-	  // Fix the IP4 checksum
-	  sum1 = ip_csum_update (sum1, old1, ip4_1->dst_address.as_u32,
-				 ip4_header_t, dst_address /* changed member */);
-	  ip4_1->checksum = ip_csum_fold (sum1);
+	      /* Update IP address of the packet using the src from the tunnel */
+	      ip4_1->dst_address.as_u32 = t1->src.ip4.as_u32;
+
+	      /* Fix the IP4 checksum */
+	      sum1 = ip_csum_update (sum1, old1, ip4_1->dst_address.as_u32,
+				     ip4_header_t, dst_address /* changed member */);
+	      ip4_1->checksum = ip_csum_fold (sum1);
+	    }
+	  else
+	    {
+	      /* Forward packet instead. Push the IP+UDP header */
+	      gtpu_hdr_len1 = - (i32)(sizeof(udp_header_t) + sizeof(ip6_header_t));
+
+	      /* IPv6 UDP checksum is mandatory */
+	      int bogus = 0;
+	      udp1->checksum = ip6_tcp_udp_icmp_compute_checksum(vm, b1,
+								  ip6_1, &bogus);
+	      if (udp1->checksum == 0)
+		udp1->checksum = 0xffff;
+	    }
 
 	next1:
 	  /* Pop gtpu header / push IP+UDP header  */
@@ -835,6 +893,8 @@ gtpu_input (vlib_main_t * vm,
 		   */
 		  if (is_ip4)
 		    tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv4;
+		  else
+		    tunnel_index0 = gtm->bad_header_forward_tunnel_index_ipv6;
 
 		  if (PREDICT_FALSE (tunnel_index0 != ~0))
 		    goto forward00;
@@ -851,6 +911,8 @@ gtpu_input (vlib_main_t * vm,
                * Check if it is to be forwarded. */
 	      if (is_ip4)
 		tunnel_index0 = gtm->unknown_type_forward_tunnel_index_ipv4;
+	      else
+		tunnel_index0 = gtm->unknown_type_forward_tunnel_index_ipv6;
 
 	      if (PREDICT_FALSE (tunnel_index0 != ~0))
 		goto forward00;
@@ -936,6 +998,9 @@ gtpu_input (vlib_main_t * vm,
                   {
                     error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
                     next0 = GTPU_INPUT_NEXT_DROP;
+		    tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+		    if (PREDICT_FALSE (tunnel_index0 != ~0))
+		      goto forward00;
                     goto trace00;
                   }
                 clib_memcpy_fast (&last_key6, &key6_0, sizeof(key6_0));
@@ -950,6 +1015,9 @@ gtpu_input (vlib_main_t * vm,
 	      {
 		error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
 		next0 = GTPU_INPUT_NEXT_DROP;
+		tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+		if (PREDICT_FALSE (tunnel_index0 != ~0))
+		  goto forward00;
 		goto trace00;
 	      }
 
@@ -971,14 +1039,14 @@ gtpu_input (vlib_main_t * vm,
 	      }
 	    error0 = GTPU_ERROR_NO_SUCH_TUNNEL;
 	    next0 = GTPU_INPUT_NEXT_DROP;
+	    tunnel_index0 = gtm->unknown_teid_forward_tunnel_index_ipv6;
+	    if (PREDICT_FALSE (tunnel_index0 != ~0))
+	      goto forward00;
 	    goto trace00;
           }
 
 	/* This can only be reached via goto */
 	forward00:
-	  /* Forward packet instead. Push the IP+UDP header */
-	  gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
-
 	  // Get the tunnel
 	  t0 = pool_elt_at_index (gtm->tunnels, tunnel_index0);
 
@@ -993,17 +1061,35 @@ gtpu_input (vlib_main_t * vm,
 	  /* Clear the error, next0 will be overwritten by the tunnel */
 	  error0 = 0;
 
-	  // Backup the IP4 checksum and address
-	  sum0 = ip4_0->checksum;
-	  old0 = ip4_0->dst_address.as_u32;
+	  if (is_ip4)
+	    {
+	      /* Forward packet instead. Push the IP+UDP header */
+	      gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip4_header_t));
+	      /* Backup the IP4 checksum and address */
+	      sum0 = ip4_0->checksum;
+	      old0 = ip4_0->dst_address.as_u32;
 
-	  // Update IP address of the packet using the src from the tunnel
-	  ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
+	      /* Update IP address of the packet using the src from the tunnel */
+	      ip4_0->dst_address.as_u32 = t0->src.ip4.as_u32;
 
-	  // Fix the IP4 checksum
-	  sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32,
-				 ip4_header_t, dst_address /* changed member */);
-	  ip4_0->checksum = ip_csum_fold (sum0);
+	      /* Fix the IP4 checksum */
+	      sum0 = ip_csum_update (sum0, old0, ip4_0->dst_address.as_u32,
+				     ip4_header_t,
+				     dst_address /* changed member */);
+	      ip4_0->checksum = ip_csum_fold (sum0);
+	    }
+	  else
+	    {
+	      /* Forward packet instead. Push the IP+UDP header */
+	      gtpu_hdr_len0 = - (i32)(sizeof(udp_header_t) + sizeof(ip6_header_t));
+
+	      /* IPv6 UDP checksum is mandatory */
+	      int bogus = 0;
+	      udp0->checksum = ip6_tcp_udp_icmp_compute_checksum(vm, b0,
+								  ip6_0, &bogus);
+	      if (udp0->checksum == 0)
+		udp0->checksum = 0xffff;
+	    }
 
 	next00:
 	  /* Pop gtpu header / push IP+UDP header */
