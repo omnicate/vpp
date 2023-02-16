@@ -338,25 +338,29 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      /* Fix GTPU length */
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
-					     - (word)_vec_len(t0->rewrite));
+					     - sizeof (*ip4_0) - sizeof(*udp0)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu0->length = new_l0;
 
 	      gtpu1 = (gtpu_header_t *)(udp1+1);
 	      new_l1 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b1)
-					     - (word)_vec_len(t1->rewrite));
+					     - sizeof (*ip4_1) - sizeof(*udp1)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu1->length = new_l1;
 
 	      gtpu2 = (gtpu_header_t *)(udp2+1);
 	      new_l2 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b2)
-					     - (word)_vec_len(t2->rewrite));
+					     - sizeof (*ip4_2) - sizeof(*udp2)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu2->length = new_l2;
 
 	      gtpu3 = (gtpu_header_t *)(udp3+1);
 	      new_l3 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b3)
-					     - (word)_vec_len(t3->rewrite));
+					     - sizeof (*ip4_3) - sizeof(*udp3)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu3->length = new_l3;
 	    }
@@ -460,25 +464,29 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      /* Fix GTPU length */
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
-					     - (word)_vec_len(t0->rewrite));
+					     - sizeof (*ip6_0) - sizeof(*udp0)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu0->length = new_l0;
 
 	      gtpu1 = (gtpu_header_t *)(udp1+1);
 	      new_l1 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b1)
-					     - (word)_vec_len(t1->rewrite));
+					     - sizeof (*ip6_1) - sizeof(*udp1)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu1->length = new_l1;
 
 	      gtpu2 = (gtpu_header_t *)(udp2+1);
 	      new_l2 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b2)
-					     - (word)_vec_len(t2->rewrite));
+					     - sizeof (*ip6_2) - sizeof(*udp2)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu2->length = new_l2;
 
 	      gtpu3 = (gtpu_header_t *)(udp3+1);
 	      new_l3 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b3)
-					     - (word)_vec_len(t3->rewrite));
+					     - sizeof (*ip6_3) - sizeof(*udp3)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu3->length = new_l3;
 

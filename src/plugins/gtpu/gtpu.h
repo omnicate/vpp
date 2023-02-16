@@ -109,7 +109,6 @@ typedef CLIB_PACKED( struct {
 /* *INDENT-ON* */
 
 #define GTPU_V1_HDR_LEN       8
-#define GTPU_V1_EXT_HDR_LEN   4
 
 #define GTPU_VER_MASK (7<<5)
 #define GTPU_PT_BIT   (1<<4)
