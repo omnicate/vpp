@@ -342,9 +342,9 @@ ip_udp_gtpu_rewrite (gtpu_tunnel_t * t, bool is_ip6)
   t->rewrite = r.rw;
   /* Now only support 8-byte gtpu header or 12+4-byte header. TBD */
   if (!is_ip6)
-    vec_set_len (t->rewrite) = sizeof (ip4_gtpu_header_t) + length_adjustment;
+    vec_set_len (t->rewrite, sizeof (ip4_gtpu_header_t) + length_adjustment);
   else
-    vec_set_len (t->rewrite) = sizeof (ip6_gtpu_header_t) + length_adjustment;
+    vec_set_len (t->rewrite,  sizeof (ip6_gtpu_header_t) + length_adjustment);
 
   return;
 }
