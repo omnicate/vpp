@@ -697,7 +697,8 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      /* Fix GTPU length TODO HOIH for HDR patch*/
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
-					     - (word)_vec_len(t0->rewrite));
+					     - sizeof (*ip4_0) - sizeof(*udp0)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu0->length = new_l0;
 	    }
@@ -738,7 +739,8 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      /* Fix GTPU length */
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
-					     - (word)_vec_len(t0->rewrite));
+					     - sizeof (*ip6_0) - sizeof(*udp0)
+					     - GTPU_V1_HDR_LEN);
 
 	      gtpu0->length = new_l0;
 
