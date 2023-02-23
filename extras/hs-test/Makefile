@@ -1,5 +1,8 @@
 all: build docker
 
+install-dep:
+	apt update -y && apt install -y golang docker-ce apache2-utils wrk bridge-utils
+
 build:
 	go build ./tools/http_server
 
