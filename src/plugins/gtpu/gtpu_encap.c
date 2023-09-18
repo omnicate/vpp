@@ -318,22 +318,22 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
 					     - sizeof (*ip4_0));
 	      udp0->length = new_l0;
-	      udp0->src_port = flow_hash0;
+	      udp0->src_port = flow_hash0 | 0xC000;
 	      udp1 = (udp_header_t *)(ip4_1+1);
 	      new_l1 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b1)
 					     - sizeof (*ip4_1));
 	      udp1->length = new_l1;
-	      udp1->src_port = flow_hash1;
+	      udp1->src_port = flow_hash1 | 0xC000;
 	      udp2 = (udp_header_t *)(ip4_2+1);
 	      new_l2 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b2)
 					     - sizeof (*ip4_2));
 	      udp2->length = new_l2;
-	      udp2->src_port = flow_hash2;
+	      udp2->src_port = flow_hash2 | 0xC000;
 	      udp3 = (udp_header_t *)(ip4_3+1);
 	      new_l3 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b3)
 					     - sizeof (*ip4_3));
 	      udp3->length = new_l3;
-	      udp3->src_port = flow_hash3;
+	      udp3->src_port = flow_hash3 | 0xC000;
 
 	      /* Fix GTPU length */
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
@@ -692,7 +692,7 @@ gtpu_encap_inline (vlib_main_t * vm,
 	      new_l0 = clib_host_to_net_u16 (vlib_buffer_length_in_chain(vm, b0)
 					     - sizeof (*ip4_0));
 	      udp0->length = new_l0;
-	      udp0->src_port = flow_hash0;
+	      udp0->src_port = flow_hash0 | 0xC000;
 
 	      /* Fix GTPU length TODO HOIH for HDR patch*/
 	      gtpu0 = (gtpu_header_t *)(udp0+1);
